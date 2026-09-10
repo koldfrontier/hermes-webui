@@ -10213,6 +10213,7 @@ def _run_agent_streaming(
                 resolved_model, resolved_provider, resolved_base_url = resolve_model_provider(
                     model_with_provider_context(model, provider_context),
                     explicitly_picked=_explicitly_picked,
+                    profile_home=_profile_home,
                 )
                 configured_base_url = resolved_base_url
 

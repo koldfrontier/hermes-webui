@@ -2718,7 +2718,12 @@ def _unique_custom_provider_entry(custom_providers: object, slug_key: str) -> di
     return matches[0] if matches else None
 
 
-def resolve_model_provider(model_id: str, *, explicitly_picked: bool = False) -> tuple:
+def resolve_model_provider(
+    model_id: str,
+    *,
+    explicitly_picked: bool = False,
+    profile_home: "Path | str | None" = None,
+) -> tuple:
     """Resolve model name, provider, and base_url for AIAgent.
 
     Model IDs from the dropdown can be in several formats:
@@ -2748,7 +2753,43 @@ def resolve_model_provider(model_id: str, *, explicitly_picked: bool = False) ->
     leftover, e.g. #433's ``openai/gpt-5.4`` on a bare-only relay) still gets the
     legacy redundant-prefix strip so it keeps routing when cold. Warm provenance
     (endpoint-advertised ids) always takes precedence over this flag.
+
+    ``profile_home``: the caller's own resolved profile-home directory, when
+    known. A detached streaming worker thread does not inherit the per-request
+    profile thread-local, so the bare module-level ``cfg`` alias below (only
+    rebound by ``reload_config()``, which ``switch_profile()`` skips for
+    per-client WebUI switches with ``process_wide=False`` so concurrent tabs
+    can sit on different profiles, #1700) can still hold a *different*
+    profile's config.
+
+    Passing ``profile_home`` reads that profile's ``config.yaml`` straight off
+    disk instead of going through ``get_config_for_profile_home()``: that
+    helper's "ambient resolver already points here, defer to get_config()"
+    shortcut (added for #3294/#4516 to preserve in-memory test overrides) is
+    exactly wrong for THIS caller. A detached worker enters this call from
+    inside ``profile_scope_for_detached_worker()``, which sets the per-thread
+    profile TLS specifically so ``get_active_hermes_home()`` resolves to the
+    session's own profile — which makes the shortcut fire on every call and
+    fall through to ``get_config()``, the single process-wide ``_cfg_cache``.
+    That cache has no per-thread isolation: a concurrent, unscoped request on
+    the same process (the WebUI's own polling endpoints fire every 1-2s) can
+    reload it back to the default profile between this thread checking the
+    shortcut and reading ``cfg.get(...)`` below, silently routing a
+    correctly-resolved model name to the wrong provider/base_url. Reading the
+    profile's file directly, unconditionally, is the same no-global-mutation
+    disk read `get_config_for_profile_home()` falls back to when its shortcut
+    does NOT apply — just taken every time here, since race-freedom is the
+    entire reason this caller has a known ``profile_home`` to pass.
     """
+    if profile_home is not None:
+        try:
+            _rmp_home = Path(profile_home).expanduser()
+            cfg = _load_yaml_config_file(_rmp_home / "config.yaml")
+            _apply_config_defaults(cfg)
+        except Exception:
+            cfg = get_config()
+    else:
+        cfg = get_config()
     config_provider = None
     config_base_url = None
     model_cfg = cfg.get("model", {})
